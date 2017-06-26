@@ -67,7 +67,7 @@ class EncoderDecoderIter(object):
     """This iterator is specially defined for the Couplet Generation
     
     """
-    def __init__(self, enc_data, dec_data, batch_size, buckets, shuffle=True, pad=0, eos=1):
+    def __init__(self, enc_data, dec_data, batch_size, shuffle=True, pad=0, eos=1):
         
         super(EncoderDecoderIter, self).__init__()
         # initilization
@@ -78,81 +78,36 @@ class EncoderDecoderIter(object):
         self.eos = eos
         self.batch_size = batch_size
         self.shuffle = shuffle
-
-        self.buckets = sorted(buckets)
-        enc_len = max([bucket[0] for bucket in self.buckets])
-        dec_len = max([bucket[1] for bucket in self.buckets])
-        self.default_bucket_key = (enc_len, dec_len)
-        self.assignments = []
-        for idx in range(self.data_len):
-            for bkt in range(len(self.buckets)):
-                if len(self.enc_data[idx]) <= self.buckets[bkt][0] and len(self.dec_data[idx]) <= self.buckets[bkt][1]:
-                    break
-            self.assignments.append(bkt)
-        buckets_count = [0 for i in range(len(self.buckets))]
-        for idx in self.assignments:
-            buckets_count[idx] += 1
-        print 'buckets: ', self.buckets
-        print 'buckets_count: ', buckets_count
-        print 'default_bucket_key: ', self.default_bucket_key
-        
-        # generate the data , mask, label numpy array
-        self.enc_data, self.dec_data = self.make_numpy_array()
-
-        # make a random data iteration plan
-        self.plan = []
-        for (i, buck) in enumerate(self.enc_data):
-            self.plan.extend([(i,j) for j in range(0, buck.shape[0] - batch_size + 1, batch_size)])
-        if self.shuffle:
-            self.idx = [np.random.permutation(x.shape[0]) for x in self.enc_data]
-        else:
-            self.idx = [np.arange(x.shape[0]) for x in self.enc_data]
-        self.curr_plan = 0
+        self.indices = range(self.data_len)
         self.reset()
-    
+
     def reset(self):
-        self.curr_plan = 0
+        self.idx = 0
         if self.shuffle:
-            random.shuffle(self.plan)
-            for idx in self.idx:
-                np.random.shuffle(idx)   
+            random.shuffle(self.indices)
     
     def __iter__(self):
         return self
 
     def next(self):
-        if self.curr_plan == len(self.plan):
+        if self.idx > self.data_len - self.batch_size:
             raise StopIteration
-        i, j = self.plan[self.curr_plan]
-        self.curr_plan += 1
-        index = self.idx[i][j:j+self.batch_size] 
+        index = self.indices[self.idx:self.idx+self.batch_size] 
+        enc = [self.enc_data[i] for i in index]
+        dec = [[self.eos] + self.dec_data[i] + [self.eos] for i in index]
+        enc_dec = [(enc[i], dec[i]) for i in range(self.batch_size)]
+        enc_dec.sort(key = lambda x:len(x[0]), reverse = True)
+        enc = [enc_dec[i][0] for i in range(self.batch_size)]
+        dec = [enc_dec[i][1] for i in range(self.batch_size)]
+        enc_length = [len(enc[i]) for i in range(self.batch_size)]
+        enc_len = max([len(l) for l in enc])
+        dec_len = max([len(l) for l in dec])
+        enc = [l + [self.pad for i in range(enc_len - len(l))] for l in enc]
+        dec = [l + [self.pad for i in range(dec_len - len(l))] for l in dec]
+        enc = np.asarray(enc, dtype='int64')
+        dec = np.asarray(dec, dtype='int64')
+        enc_data = torch.from_numpy(enc)
+        dec_data = torch.from_numpy(dec)   
+        self.idx += self.batch_size
+        return enc_data, enc_length, dec_data
 
-        enc_data = torch.from_numpy(self.enc_data[i][index])
-        dec_data = torch.from_numpy(self.dec_data[i][index])   
-        return enc_data, dec_data
-
-        
-    def make_data_line(self, i, bucket):
-        data = self.enc_data[i]
-        label = self.dec_data[i]
-        ed = np.full(bucket[0], self.pad, dtype = int)
-        dd = np.full(bucket[1], self.pad, dtype = int)
-        
-        #ed[enc_len-len(data):enc_len] = data
-        #em[enc_len-len(data):enc_len] = 1.0 # for mask
-        ed[0:len(data)] = data
-        dd[0:len(label)+2] = [self.eos] + label + [self.eos]
-
-        return ed, dd
-
-    def make_numpy_array(self):
-        enc_data = [[] for _ in self.buckets]
-        dec_data = [[] for _ in self.buckets]
-        for i in xrange(self.data_len):
-            bkt_idx = self.assignments[i]
-            ed, dd = self.make_data_line(i, self.buckets[bkt_idx])
-            enc_data[bkt_idx].append(ed)
-            dec_data[bkt_idx].append(dd)
-        enc_data = [np.asarray(i, dtype='int64') for i in enc_data]
-        dec_data = [np.asarray(i, dtype='int64') for i in dec_data]
-        return enc_data, dec_data
